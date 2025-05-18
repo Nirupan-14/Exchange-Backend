@@ -40,7 +40,7 @@ class ExchangeRateController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Sample rate inserted successfully',
+            'message' => ' USD rate updated',
             'data' => $rate,
         ]);
     }
