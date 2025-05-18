@@ -1,0 +1,108 @@
+name: Back‑end CI/CD
+
+# Trigger on pushes and PRs against main
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: 🧪 Run Tests & Build Assets
+    runs-on: ubuntu-latest
+
+    services:
+      # MongoDB service
+      mongo:
+        image: mongo:4.4
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongo --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP & extensions
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.1
+          extensions: mbstring, bcmath, xml, mongodb, pdo
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress --prefer-dist
+
+      - name: Prepare .env
+        run: |
+          cp .env .env.ci
+          # override only necessary vars
+          echo "DB_CONNECTION=mongodb" >> .env.ci
+          echo "DB_DATABASE=currency_exchange" >> .env.ci
+          echo "DB_URI=${{ secrets.CI_DB_URI }}" >> .env.ci
+          echo "SESSION_DRIVER=file" >> .env.ci
+          mv .env.ci .env
+          php artisan key:generate
+
+      - name: Migrate database
+        run: php artisan migrate --force
+
+      - name: Install Node & Build front assets
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - run: npm ci
+      - run: npm run build
+
+      - name: Run test suite
+        run: php artisan test --verbose
+
+  deploy:
+    name: 🚀 Deploy to Production
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP & Node
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.1
+          extensions: mbstring, bcmath, xml, mongodb, pdo
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install deps & build
+        run: |
+          composer install --no-interaction --prefer-dist
+          npm ci
+          npm run build
+
+      # Example: SSH deploy — adapt path & commands to your server
+      - name: Deploy via SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_KEY }}
+          SSH_HOST:        ${{ secrets.SSH_HOST }}
+          SSH_USER:        ${{ secrets.SSH_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST << 'EOF'
+            cd /var/www/currency-exchange
+            git pull origin main
+            mv .env.production .env
+            composer install --no-interaction --prefer-dist
+            php artisan migrate --force
+            npm ci && npm run build
+            php artisan cache:clear
+            exit
+          EOF
